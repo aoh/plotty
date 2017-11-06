@@ -50,7 +50,10 @@
          (else d))))
 
 (define (data-string->number s)
-   (round (* 100 (string->number s))))
+   (let ((x (string->number s)))
+      (if x 
+         (round (* 100 (string->number s)))
+         x)))
 
 (define (parse-json-event s)
    (lets 
@@ -141,10 +144,12 @@
        (ymax (fold max (car ys) (cdr ys)))
        (yrange (- ymax ymin))
        (ystep (/ (- ymax ymin) height)))
+      (print (date-str (time)) ": " (getf args 'y) " " (round (/ ymin 100)) " - " (round (/ ymax 100)))
       (fold
          (λ (pixels node)
-            (let ((x (round (/ (- (car node) xmin) xstep)))
-                  (y (round (/ (- (cdr node) ymin) ystep))))
+            (lets ((x (round (/ (- (car node) xmin) xstep)))
+                   (y (round (/ (- (cdr node) ymin) ystep)))
+                   (y (- height y)))
                (put pixels (at x y) #true)))
          (-> empty
             (put 'width (get args 'width 10))
@@ -163,10 +168,10 @@
             comment "key or column of x axis in data ")
         (y "-y" "--y-axis" cook ,string->symbol default "1"
            comment "key or column of y axis in data")
-        (width "-w" "--width"
+        (width "-W" "--width"
            has-arg cook ,string->integer 
            default "160")
-        (height "-h" "--height"
+        (height "-H" "--height"
            has-arg cook ,string->integer
            default "60")
         (ids "-i"  "--ids"   cook ,(λ (s) (map data-string->number (c/, */ s))) 
@@ -234,7 +239,7 @@
                (print (bottom-line w)))))))
 
 (define (dot pixels x y)
-   (put pixels (+ (<< x 12) y) #true))
+   (put pixels (+ (<< x 12) y #true)))
 
 (λ (args)
    (process-arguments (cdr args) command-line-rules "command line fail"
@@ -249,7 +254,6 @@
                1)
             ((timed "input parsing" (parse-inputs args)) =>
                (λ (events)
-                  (print (date-str (time)))
                   (print-picture
                      (render-output opts events))))
             (else
