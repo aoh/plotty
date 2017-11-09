@@ -37,7 +37,7 @@
                 (elapsed (- (time-ms) start)))
                (print-to stderr (str msg " took " elapsed "ms"))
                res))))
-         
+
 (define (printer . objs)
    (write-bytes stdout
       (flatten objs null)))
@@ -54,6 +54,34 @@
       (if x 
          (round (* 100 (string->number s)))
          x)))
+
+(define (data->number lst)
+   (let loop ((lst lst) (n 0))
+      (if (null? lst)
+         (* n 100)
+         (lets ((hd lst lst)
+                (d (- hd #\0)))
+            (cond
+               ((eq? hd #\.)
+                  (cond
+                     ((null? lst)
+                        (* n 100))
+                     ((null? (cdr lst))
+                        (+ (* n 100) (* (- (car lst) #\0) 10)))
+                     (else
+                        (+ (* n 100)
+                           (+ (* (- (car lst) #\0) 10) (- (cadr lst) #\0))))))
+               (else
+                  (loop  lst (+ (* n 10) d))))))))
+
+(define (data-list->number lst)
+   (cond
+      ((null? lst) 0)
+      ((eq? (car lst) #\-)
+         (- 0 (data->number (cdr lst))))
+      ((eq? (car lst) #\+)
+         (data->number (cdr lst)))
+      (else (data->number lst))))
 
 (define (parse-json-event s)
    (lets 
@@ -76,7 +104,9 @@
              (λ (x) 
                 (let ((key-val (c/=/ x)))
                    (cons (string->symbol (car key-val))
-                         (data-string->number (cadr key-val)))))
+                         ;(data-string->number (cadr key-val))
+                         42
+                         )))
               pairs)))
       (list->ff key-vals)))
 
@@ -104,9 +134,63 @@
 
 (define usage "usage: plotty [args] [file] ...")
 
+;; cutter : st char lst  cook → st' ((cook seq) ...) 
+(define (cutter st char lst cook)
+   (let loop ((st st) (lst lst) (rout null) (done null))
+      (cond
+         ((null? lst)
+            (if (null? rout)
+               (values st done)
+               (lets ((st val (cook st rout)))
+                  (values st (cons val done)))))
+         ((eq? (car lst) char)
+            (lets ((st val (cook st rout)))
+               (loop st (cdr lst) null (cons val done))))
+         (else
+            (loop st (cdr lst) (cons (car lst) rout) done)))))
+
+(define (cut-at-= st lst cook)
+   (let loop ((st st) (lst lst) (rout null))
+      (cond
+         ((null? lst)
+            (error "cut-at: no =" lst))
+         ((eq? (car lst) #\=)
+            (cook st rout (cdr lst)))
+         (else
+            (loop st (cdr lst) (cons (car lst) rout))))))
+
+(define (lookup st key)
+   (cond
+      ((null? st) #false)
+      ((equal? (car (car st)) key)
+         (cdr (car st)))
+      (else (lookup (cdr st) key))))
+
+(define (intern st key)
+   (let ((res (lookup st key)))
+      (if res
+         (values st res)
+         (let ((sym (string->symbol (list->string (reverse key)))))
+            (values (append st (list (cons key sym))) sym)))))
+ 
 (define (parse-port evs port)
-   (parse-events evs (lines port)))
+   (lets ((st res
+      (cutter null #\newline
+         (timed "input streaming" (force-ll (port->byte-stream port)))
+         (λ (st rline)
+            (cutter st #\; rline
+               (λ (st field)
+                  (cut-at-= st field
+                     (λ (st rhead tl)
+                        (lets ((st key (intern st rhead))
+                               (val (data-list->number tl))
+                               (node (cons key val)))
+                           (values st node))))))))))
+      (map list->ff res)))
    
+(define (parse-port-old evs port)
+   (parse-events evs (lines port)))
+
 (define (parse-inputs args)
    (fold
       (λ (evs path)
@@ -114,12 +198,12 @@
             ((not evs) evs)
             ((open-input-file path) =>
                (λ (port)
-                  (parse-port evs port)))
+                  (timed "parsing port" (parse-port evs port))))
             (else
                (print-to stderr "Failed to open " path)
                #false)))
       null args))
-         
+
 (define (render-output args events)
    (lets
       ((x-key (getf args 'x))
