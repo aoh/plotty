@@ -17,6 +17,18 @@
       (else
          (bor (<< x 12) y))))
 
+(define (all-keys evs)
+   (keys
+      (fold
+         (λ (seen evt)
+            (ff-fold
+               (λ (seen key _)
+                  (if (get seen key #f)
+                     seen
+                     (put seen key #t)))
+               seen evt))
+         #empty evs)))
+
 (define (flatten obj tl)
    (cond
       ((pair? obj)
@@ -35,7 +47,7 @@
          (lets ((start (time-ms))
                 (res exp)
                 (elapsed (- (time-ms) start)))
-               (print-to stderr (str msg " took " elapsed "ms"))
+               ;(print-to stderr (str msg " took " elapsed "ms"))
                res))))
 
 (define (printer . objs)
@@ -178,7 +190,8 @@
       (cutter null #\newline
          (timed "input streaming" (force-ll (port->byte-stream port)))
          (λ (st rline)
-            (cutter st #\; rline
+            (cutter st #\space
+               rline
                (λ (st field)
                   (cut-at-= st field
                      (λ (st rhead tl)
@@ -191,12 +204,19 @@
 (define (parse-port-old evs port)
    (parse-events evs (lines port)))
 
+(define (maybe-open-input-file path)
+   (cond
+      ((equal? path "-")
+         stdin)
+      (else
+         (open-input-file path))))
+
 (define (parse-inputs args)
    (fold
       (λ (evs path)
          (cond
             ((not evs) evs)
-            ((open-input-file path) =>
+            ((maybe-open-input-file path) =>
                (λ (port)
                   (timed "parsing port" (parse-port evs port))))
             (else
@@ -204,11 +224,9 @@
                #false)))
       null args))
 
-(define (render-output args events)
+(define (render-output args events x-key y-key)
    (lets
-      ((x-key (getf args 'x))
-       (y-key (getf args 'y))
-       (data 
+      ((data 
           (fold
              (λ (out node)
                 (let ((x (getf node x-key))
@@ -219,27 +237,34 @@
              null events))
        (xs (map car data))
        (ys (map cdr data))
-       (width (getf args 'width))
-       (height (getf args 'height))
-       (xmin (fold min (car xs) (cdr xs)))
-       (xmax (fold max (car xs) (cdr xs)))
-       (xstep (/ (- xmax xmin) width))
-       (ymin (fold min (car ys) (cdr ys)))
-       (ymax (fold max (car ys) (cdr ys)))
-       (yrange (- ymax ymin))
-       (ystep (/ (- ymax ymin) height)))
-      (print (date-str (time)) ": " (getf args 'y) " " (round (/ ymin 100)) " - " (round (/ ymax 100)))
-      (fold
-         (λ (pixels node)
-            (lets ((x (round (/ (- (car node) xmin) xstep)))
-                   (y (round (/ (- (cdr node) ymin) ystep)))
-                   (y (- height y)))
-               (put pixels (at x y) #true)))
-         (-> empty
-            (put 'width (get args 'width 10))
-            (put 'height (get args 'height 10)))
-         (zip cons xs ys))))
-
+       (width (get args 'width 10))
+       (height (get args 'height 10)))
+      (if (null? data)
+         'empty
+         (lets 
+           ((xmin (fold min (car xs) (cdr xs)))
+            (xmax (fold max (car xs) (cdr xs)))
+            (xstep (/ (- xmax xmin) width))
+            (ymin (fold min (car ys) (cdr ys)))
+            (ymax (fold max (car ys) (cdr ys)))
+            (yrange (- ymax ymin))
+            (ystep (/ (- ymax ymin) height)))
+           (print (date-str (time)) ": " x-key " x " y-key " " (round (/ ymin 100)) " - " (round (/ ymax 100)))
+           (fold
+              (λ (pixels node)
+                 (lets ((x (round (/ (- (car node) xmin) xstep)))
+                        (y (round (/ (- (cdr node) ymin) ystep)))
+                        (y (- height y)))
+                    (put pixels (at x y) #true)))
+              (-> empty
+                 (put 'ymax ymax)
+                 (put 'ymin ymin)
+                 (put 'xmax xmax)
+                 (put 'xmin xmin)
+                 (put 'width (get args 'width 10))
+                 (put 'height (get args 'height 10)))
+              (zip cons xs ys))))))
+        
 (define command-line-rules
    (cl-rules
       `((help "-h" "--help"  
@@ -248,16 +273,16 @@
             comment "comma-separated list of keys to pick (default all)")
         (output "-o" "--output" has-arg
             comment "output csv file")
-        (x "-x" "--x-axis" cook ,string->symbol default "0"
+        (x "-x" "--x-axis" has-arg
             comment "key or column of x axis in data ")
-        (y "-y" "--y-axis" cook ,string->symbol default "1"
+        (y "-y" "--y-axis" has-arg
            comment "key or column of y axis in data")
         (width "-W" "--width"
            has-arg cook ,string->integer 
            default "160")
         (height "-H" "--height"
            has-arg cook ,string->integer
-           default "60")
+           default "40")
         (ids "-i"  "--ids"   cook ,(λ (s) (map data-string->number (c/, */ s))) 
             comment "comma-separated list of ids to keep (default all)"))))
 
@@ -294,36 +319,118 @@
             (render-row data (+ x 2) y width)))
       null))
 
+
+(define top-left-corner #\╭)     ;; or ┌ ╭
+(define top-right-corner #\╮)    ;; or ┐
+(define bottom-left-corner #\╰)  ;; or └
+(define bottom-right-corner #\╯) ;; or ┘
+
+(define y-border-tick #\┤)
+(define y-border #\│)
+   
 (define (top-line width)
    (list->string
-      (cons #\┌
+      (cons top-left-corner
          (append
             (map (λ (x) #\─) (iota 0 1 (round (/ width 2))))
-            (list #\┐)))))
+            (list top-right-corner)))))
 
 (define (bottom-line width)
    (list->string
-      (cons #\└
+      (cons bottom-left-corner
          (append
             (map (λ (x) #\─) (iota 0 1 (round (/ width 2))))
-            (list #\┘)))))
+            (list bottom-right-corner)))))
 
-(define border #\│)
+
+(define (align-right val w)
+   (cond
+      ((number? val)
+         (align-right (render val null) w))
+      ((string? val)
+         (align-right (string->list val) w))
+      ((< (length val) w)
+         (align-right (cons #\space val) w))
+      (else 
+         (list->string val))))
+
+(define (unfloat int)
+   (lets ((q r (quotrem int 100)))
+      (if (= r 0)
+         (str q)
+         (str q "." r))))
 
 (define (print-picture data)
-   (let ((w (getf data 'width))
-         (h (getf data 'height)))
-      (print (top-line w))
-      (let loop-row ((y 0))
-         (cond
-            ((< y h)
-               (print (list->string (cons border (append (render-row data 0 y w) (list border)))))
-               (loop-row (+ y 2)))
-            (else
-               (print (bottom-line w)))))))
+   (if (eq? data 'empty)
+      (print-to stderr "(no data)")
+      (lets ((w (getf data 'width))
+             (h (getf data 'height))
+             (ymax (getf data 'ymax))
+             (ymin (getf data 'ymin))
+             (y-axis-scale-width 
+                (fold max 0 
+                   (map (o string-length unfloat) 
+                      (list ymax ymin))))
+             (left-pad (list->string (map (λ (x) #\space) (iota 0 1 y-axis-scale-width)))))
+         (print (align-right null y-axis-scale-width) (top-line w))
+         (let loop ((y 0))
+            (cond
+               ((= y 0)
+                  (display (align-right (unfloat ymax) y-axis-scale-width))
+                  (print (list->string (cons y-border-tick (append (render-row data 0 y w) (list y-border)))))
+                  (loop (+ y 2)))
+               ((>= (+ y 1) h)
+                  (display (align-right (unfloat ymin) y-axis-scale-width))
+                  (print (list->string (cons y-border-tick (append (render-row data 0 y w) (list y-border)))))
+                  (print left-pad (bottom-line w)))
+               (else
+                  (display (align-right null y-axis-scale-width))
+                  (print (list->string (cons y-border (append (render-row data 0 y w) (list y-border)))))
+                  (loop (+ y 2))))))))
 
 (define (dot pixels x y)
    (put pixels (+ (<< x 12) y #true)))
+
+(define (distance a b)
+   (abs (- a b)))
+
+(define (nearest evt keys val)
+   (let loop ((evt evt) (keys (cdr keys)) (lead (cons (car keys) (distance (getf evt (car keys)) val))))
+      (if (null? keys)
+         (car lead)
+         (let ((this (distance (getf evt (car keys)) val)))
+            (loop evt (cdr keys)
+               (if (< this (cdr lead))
+                  (cons (car keys) this)
+                  lead))))))
+
+(define (guess-x evs)
+   (let ((evs (take evs 30)))
+      (let ((opts (fold intersect (keys (car evs)) (map keys (cdr evs)))))
+         (cond
+            ((null? opts)
+               (error "cannot guess x" "please specify one with -x"))
+            ((= (length opts) 1)
+               (car opts))
+            (else
+               (nearest (car evs) opts (* (time) 100)))))))
+           
+(define (maybe op arg)
+   (if arg (op arg) arg))
+
+(define (render-outputs args events)
+   (if (pair? events)
+      (let ((x-key (or (maybe string->symbol (getf args 'x)) (guess-x events))))
+         (for-each
+            (λ (y-key)
+               ;(print-to stderr (str "rendering graph of " x-key " x " y-key))
+               (print-picture
+                  (render-output args events x-key y-key)))
+            (lets ((y-key (getf args 'y)))
+               (if y-key
+                  (map string->symbol 
+                     (c/,/ y-key))
+                  (diff (all-keys events) (list x-key))))))))
 
 (λ (args)
    (process-arguments (cdr args) command-line-rules "command line fail"
@@ -338,8 +445,7 @@
                1)
             ((timed "input parsing" (parse-inputs args)) =>
                (λ (events)
-                  (print-picture
-                     (render-output opts events))))
+                  (render-outputs opts events)))
             (else
                (print-to stderr "Failed ot load event data")
                1)))))
